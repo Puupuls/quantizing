@@ -1,0 +1,6 @@
+optimum
+transformers
+auto-gptq
+torch
+AutoAWQ
+awq
