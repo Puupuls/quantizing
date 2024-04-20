@@ -1,3 +1,4 @@
+import shutil
 from time import time
 
 import torch
@@ -32,19 +33,18 @@ class ControllerQuantizer:
         model = AutoAWQForCausalLM.from_pretrained(model_name, cache_dir=f"cache/")
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, cache_dir=f"cache/{model_name}")
         metrics["load_time"] = time() - time_start
-        model.to("cuda")
         metrics["gpu_after_loading"] = get_gpu_utilization()
 
         time_start = time()
         model.quantize(tokenizer, quant_config=_quant_config)
+        # model.fuse_layers(model)
         metrics["quant_time"] = time() - time_start
 
         model.to("cuda")
         metrics["gpu_quantized"] = get_gpu_utilization()
-        # try:
-        #     model.save_quantized(f"cache/quantized/{model_name}/awq")
-        # except:
-        #     pass
+        model.save_quantized(f"cache/quantized/{model_name}/awq")
+        model = AutoAWQForCausalLM.from_quantized(f"cache/quantized/{model_name}/awq", fuse_layers=True).to("cuda")
+        shutil.rmtree(f"cache/{model_name}", ignore_errors=True)
         return model, metrics
 
     @staticmethod
@@ -69,7 +69,6 @@ class ControllerQuantizer:
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir="cache/")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, cache_dir="cache/").to("cuda")
         metrics["load_time"] = time() - time_start
-        model.to("cuda")
         metrics["gpu_after_loading"] = get_gpu_utilization()
         time_start = time()
         quantizer = GPTQQuantizer(**_quant_config)

@@ -1,4 +1,5 @@
 import gc
+import shutil
 from csv import DictWriter
 from time import time
 
@@ -11,12 +12,11 @@ from controllers.ControllerEvaluator import ControllerEvaluator
 from utils import get_gpu_utilization
 
 gpu_background_ram = get_gpu_utilization()
-# model_name = "TheBloke/Mistral-7B-v0.1-AWQ"
-model_name = "mistralai/Mistral-7B-v0.1"
+model_name = "meta-llama/Llama-2-13b-hf"
 
 load_start = time()
-model = AutoAWQForCausalLM.from_pretrained(model_name, cache_dir=f"cache/").to('cuda')
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, cache_dir=f"cache/")
+# model = AutoAWQForCausalLM.from_pretrained(model_name, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 load_end = time()
 gpu_loaded = get_gpu_utilization()
 
@@ -27,7 +27,12 @@ time_start = time()
 evaluator = ControllerEvaluator(tokenizer=tokenizer)
 
 time_start = time()
-results = evaluator.evaluate(model=model)
+# results = evaluator.evaluate(model=model)
+results = {
+    "similarities": 'n/a',
+    "bleus": 'n/a',
+    "failures": 'n/a'
+}
 results_obj["original"] = {
     'base': model_name,
     "eval_time": time()-time_start,
@@ -50,9 +55,11 @@ with open(results_csv, "w") as f:
     writer.writeheader()
     writer.writerow(results_obj["original"])
 
-del model
+# del model
 torch.cuda.empty_cache()
 gc.collect()
+# Clean ./cache/ folder
+shutil.rmtree("./cache", ignore_errors=True)
 
 # for i in [4]:  # only 4bit supported for now
 #     for m in ["GEMM"]:  # GEMV is crashing
@@ -78,13 +85,13 @@ with open(results_csv, "a") as f:
 
 del model
 del metrics
-
 torch.cuda.empty_cache()
 gc.collect()
+shutil.rmtree("./cache", ignore_errors=True)
 
 for bits in range(2, 8):
     for seq_len in [512, 1024, 2048]:
-        for group_size in [128, 256, 512]:
+        for group_size in [256]:
             try:
                 model, metrics = ControllerQuantizer.gptq(model_name, quant_config={
                     "bits": bits,
@@ -115,8 +122,10 @@ for bits in range(2, 8):
                 continue
             del model
             del metrics
+            del result
             torch.cuda.empty_cache()
             gc.collect()
+shutil.rmtree("./cache", ignore_errors=True)
 
 for b in [4, 8]:
     model, metrics = ControllerQuantizer.gptq(model_name, quant_config={
@@ -149,6 +158,7 @@ for b in [4, 8]:
     del metrics
     torch.cuda.empty_cache()
     gc.collect()
+shutil.rmtree("./cache", ignore_errors=True)
 
 print(results_obj)
 
