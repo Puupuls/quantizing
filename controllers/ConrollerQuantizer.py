@@ -43,6 +43,7 @@ class ControllerQuantizer:
         model.to("cuda")
         metrics["gpu_quantized"] = get_gpu_utilization()
         model.save_quantized(f"cache/quantized/{model_name}/awq")
+        del model
         model = AutoAWQForCausalLM.from_quantized(f"cache/quantized/{model_name}/awq", fuse_layers=True).to("cuda")
         shutil.rmtree(f"cache/{model_name}", ignore_errors=True)
         return model, metrics
@@ -67,12 +68,13 @@ class ControllerQuantizer:
 
         time_start = time()
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir="cache/")
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, cache_dir="cache/").to("cuda")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, cache_dir="cache/")
         metrics["load_time"] = time() - time_start
         metrics["gpu_after_loading"] = get_gpu_utilization()
         time_start = time()
         quantizer = GPTQQuantizer(**_quant_config)
         quantized_model = quantizer.quantize_model(model, tokenizer)
+        quantized_model.to("cuda")
         metrics["quant_time"] = time() - time_start
 
         metrics["gpu_quantized"] = get_gpu_utilization()

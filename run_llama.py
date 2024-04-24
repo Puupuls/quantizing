@@ -5,17 +5,16 @@ from time import time
 
 import torch
 from awq import AutoAWQForCausalLM
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from controllers.ConrollerQuantizer import ControllerQuantizer
 from controllers.ControllerEvaluator import ControllerEvaluator
 from utils import get_gpu_utilization
 
 gpu_background_ram = get_gpu_utilization()
-model_name = "meta-llama/Llama-2-13b-hf"
+model_name = "Undi95/Meta-Llama-3-8B-hf"
 
 load_start = time()
-# model = AutoAWQForCausalLM.from_pretrained(model_name, device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 load_end = time()
 gpu_loaded = get_gpu_utilization()
@@ -23,16 +22,15 @@ gpu_loaded = get_gpu_utilization()
 results_csv = model_name.replace("/",'_')+"--awq.csv"
 results_obj = {}
 
-time_start = time()
+fieldnames = [
+    'base', 'eval_time', 'ds', 'ds_size', 'bits', 'model_seqlen', 'q_group_size', 'method', 'type', 'load_time',
+    'gpu_after_loading', 'gpu_background_ram', 'gpu_quantized', 'quant_time', 'similarities', 'bleus', 'failures'
+]
 evaluator = ControllerEvaluator(tokenizer=tokenizer)
 
 time_start = time()
-# results = evaluator.evaluate(model=model)
-results = {
-    "similarities": 'n/a',
-    "bleus": 'n/a',
-    "failures": 'n/a'
-}
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
+results = evaluator.evaluate(model=model)
 results_obj["original"] = {
     'base': model_name,
     "eval_time": time()-time_start,
@@ -51,37 +49,36 @@ results_obj["original"] = {
     **results
 }
 with open(results_csv, "w") as f:
-    writer = DictWriter(f, fieldnames=list(results_obj['original'].keys()))
+    writer = DictWriter(f, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerow(results_obj["original"])
-
-# del model
+del model
+del results
 torch.cuda.empty_cache()
 gc.collect()
-# Clean ./cache/ folder
 shutil.rmtree("./cache", ignore_errors=True)
 
 # for i in [4]:  # only 4bit supported for now
-#     for m in ["GEMM"]:  # GEMV is crashing
-model, metrics = ControllerQuantizer.awq(model_name, quant_config={"version": "GEMM", "w_bit": 4})
-time_start = time()
-results = evaluator.evaluate(model=model)
-results_obj[f"awq"] = {
-    'base': model_name,
-    "eval_time": time()-time_start,
-    "ds": "HuggingFaceH4/no_robots test_sft",
-    "ds_size": len(evaluator.ds),
-    "type": "AWQ",
-    "method": "GEMM",
-    "bits": 4,
-    "model_seqlen": "N/A",
-    "q_group_size": "N/A",
-    **metrics,
-    **results
-}
-with open(results_csv, "a") as f:
-    writer = DictWriter(f, fieldnames=list(results_obj['original'].keys()))
-    writer.writerow(results_obj[f"awq"])
+for m in ["GEMV", "GEMM"]:  # GEMV is crashing
+    model, metrics = ControllerQuantizer.awq(model_name, quant_config={"version": m, "w_bit": 4})
+    time_start = time()
+    results = evaluator.evaluate(model=model)
+    results_obj[f"awq"] = {
+        'base': model_name,
+        "eval_time": time()-time_start,
+        "ds": "HuggingFaceH4/no_robots test_sft",
+        "ds_size": len(evaluator.ds),
+        "type": "AWQ",
+        "method": m,
+        "bits": 4,
+        "model_seqlen": "N/A",
+        "q_group_size": "N/A",
+        **metrics,
+        **results
+    }
+    with open(results_csv, "a") as f:
+        writer = DictWriter(f, fieldnames=fieldnames)
+        writer.writerow(results_obj[f"awq"])
 
 del model
 del metrics
@@ -114,7 +111,7 @@ for bits in range(2, 8):
                     **results
                 }
                 with open(results_csv, "a") as f:
-                    writer = DictWriter(f, fieldnames=list(results_obj['original'].keys()))
+                    writer = DictWriter(f, fieldnames=fieldnames)
                     writer.writerow(results_obj[f"gptq_{bits}bit_{seq_len}seq_{group_size}group"])
 
             except Exception as e:
@@ -122,7 +119,7 @@ for bits in range(2, 8):
                 continue
             del model
             del metrics
-            del result
+            del results
             torch.cuda.empty_cache()
             gc.collect()
 shutil.rmtree("./cache", ignore_errors=True)
@@ -152,7 +149,7 @@ for b in [4, 8]:
         **results
     }
     with open(results_csv, "a") as f:
-        writer = DictWriter(f, fieldnames=list(results_obj['original'].keys()))
+        writer = DictWriter(f, fieldnames=fieldnames)
         writer.writerow(results_obj[f"bnb_{b}bit"])
     del model
     del metrics
