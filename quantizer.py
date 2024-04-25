@@ -1,64 +1,23 @@
 import sys
 import json
 from time import time
-
-import evaluate
-import torch
-from datasets import load_metric, load_dataset
-from evaluate import evaluator
-from sentence_transformers import SentenceTransformer
+import lm_eval
+from lm_eval.tasks import TaskManager
+from lm_eval.models.huggingface import HFLM
 from transformers import BitsAndBytesConfig, GPTQConfig, AqlmConfig, QuantoConfig, AwqConfig, AutoModelForCausalLM, \
     AutoTokenizer
 from utils import get_gpu_utilization
 
 
-models = [
-    SentenceTransformer('sentence-transformers/all-mpnet-base-v2'),
-    SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'),
-    SentenceTransformer('headlesstech/semantic_xlmr'),
-]
-def similarity(predictions, references):
-    y_emb = []
-    y_pred_emb = []
-    for i, d in enumerate(predictions):
-        pass
-
-
 def evaluate_model(model, tokenizer) -> dict[str, dict[str, float]]:
-    # Define the hardcoded datasets and metrics
-    # datasets = {
-    #     'HuggingFaceH4/no_robots': ['bleu', 'rouge', 'perplexity', 'accuracy', 'f1' 'precision'],
-    #     'cais/mmlu': ['bleu', 'rouge', 'perplexity', 'accuracy', 'f1' 'precision'],
-    #     'tau/commonsense_qa': ['bleu', 'rouge', 'perplexity', 'accuracy', 'f1' 'precision'],
-    #     'openai_humaneval': ['bleu', 'rouge', 'perplexity', 'accuracy', 'f1' 'precision'],
-    #     'quac': ['bleu', 'rouge', 'perplexity', 'accuracy', 'f1' 'precision'],
-    #     'rajpurkar/squad_v2': ['squad_v2'],
-    #     'super_glue': ['super_glue'],
-    #     'wiki_split': ['wiki_split'],
-    # }
     results = {}
 
-    task_evaluator = evaluator("question-answering")
-    data = load_dataset("squad_v2", split="validation[:1000]")
-    eval_results = task_evaluator.compute(
-        model_or_pipeline=model,
-        data=data,
-        tokenizer=tokenizer,
-        metric="squad",
-        strategy="bootstrap",
-        n_resamples=10,
+    TaskManager().initialize_tasks()
+    results = lm_eval.simple_evaluate(
+        model,
+        tasks=['glue', 'mmlu', 'wikitext', 'super_glue'],
+        num_fewshot=5
     )
-    results[f"squad_total_time_in_sec"] = eval_results["total_time_in_seconds"]
-    results[f"squad_samples_per_second"] = eval_results["samples_per_second"]
-    results[f"squad_latency_sec"] = eval_results["latency_in_seconds"]
-    results[f"squad_exact_match_score"] = eval_results["exact_match"]['score']
-    results[f"squad_exact_match_error"] = eval_results["exact_match"]['standard_error']
-    results[f"squad_exact_match_confidence_min"] = eval_results["exact_match"]['confidence_interval'][0]
-    results[f"squad_exact_match_confidence_max"] = eval_results["exact_match"]['confidence_interval'][1]
-    results[f"squad_f1_score"] = eval_results["f1"]['score']
-    results[f"squad_f1_error"] = eval_results["f1"]['standard_error']
-    results[f"squad_f1_confidence_min"] = eval_results["f1"]['confidence_interval'][0]
-    results[f"squad_f1_confidence_max"] = eval_results["f1"]['confidence_interval'][1]
 
     return results
 
