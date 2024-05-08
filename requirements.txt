@@ -17,3 +17,4 @@ rouge_score
 lm-eval
 pandas
 autoawq-kernels
+ray[tune]

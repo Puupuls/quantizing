@@ -18,9 +18,10 @@ awq_params = {
 gptq_params = {
     'model_name': MODEL,
     'bits': [2, 3, 4, 8],
+    'disable_exllama': [True, False],
     'model_seqlen': [512, 1024, 2048],
     'group_size': [64, 128, 256, 512, -1],
-    'dataset': ['c4-new', 'wikitext2', 'ptb-new'],
+    'dataset': ['c4-new', 'wikitext2'],
     'damp_percent': [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
     'desc_act': [True, False],
     'sym': [True, False],
@@ -54,6 +55,8 @@ for method, param_space in param_spaces.items():
     param_values = param_space.values()
     for values in itertools.product(*param_values):
         params = dict(zip(param_names, values))
+        if method == 'gptq' and params['bits'] != 8 and params['disable_exllama']:
+            continue
 
         # Prepare the command to run the quantization in a separate process.
         try:
