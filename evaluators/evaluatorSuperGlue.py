@@ -3,9 +3,10 @@ from time import time
 
 from datasets import load_dataset
 from sklearn.metrics import f1_score
+from tensorboardX import SummaryWriter
 from tqdm import tqdm
 from transformers import pipeline, TextGenerationPipeline
-MAX_PER_TASK = 1000
+MAX_PER_TASK = 100
 
 class EvaluatorSuperGlue():
     def evaluate_axb(self, model, tokenizer):
@@ -90,15 +91,15 @@ class EvaluatorSuperGlue():
         # Initialize metrics
         correct = 0
         total = 0
-        time_start = time()
-
-        results = {}
-
         # Evaluate
-        for example in tqdm(dataset, desc='Evaluating axg B1', total=len(dataset)):
+        for example in tqdm(dataset, desc='Evaluating axg', total=len(dataset)):
             # Combine 'sentence1' and 'sentence2' into a single string
-            input_data = "ALWAYS respond with one and only one symbol 0=yes, 1=no, nothing else, no punctuation! The task is to determine whether a 2nd sentence is entailed from the 1st sentence or not.: " + \
-                         example['premise'] + ' ' + example['hypothesis'] + "\nAnswer: "
+            input_data = ("ALWAYS respond with one and only one symbol 0=yes, 1=no, nothing else, no punctuation! "
+                          "The task is to determine whether a 2nd sentence is entailed from the 1st sentence or not. "
+                          f"Sentence 1: {example['hypothesis']}"
+                          f"\nSentence 2: {example['premise']}"
+                          "\nAnswer: "
+                          )
             prediction = nlp(
                 input_data,
             )
@@ -109,11 +110,8 @@ class EvaluatorSuperGlue():
 
         # Calculate accuracy
         accuracy = correct / total
-        results['sg_axg_accuracy_b1'] = accuracy
-        results['sg_axg_time_b1'] = (time() - time_start) / total
-        results['sg_axg_samples'] = total
 
-        return results
+        return accuracy
 
     def evaluate_boolq(self, model, tokenizer):
         # Load the dataset
@@ -152,7 +150,7 @@ class EvaluatorSuperGlue():
         results['sg_boolq_time_b1'] = (time() - time_start) / total
         results['sg_boolq_samples'] = total
 
-        return results
+        return accuracy
 
     def evaluate_cb(self, model, tokenizer):
         # Load the dataset
@@ -233,7 +231,7 @@ class EvaluatorSuperGlue():
         results['sg_copa_time'] = (time() - time_start) / total
         results['sg_copa_samples'] = total
 
-        return results
+        return accuracy
 
     def evaluate_multirc(self, model, tokenizer):
         # Load the dataset
@@ -273,7 +271,7 @@ class EvaluatorSuperGlue():
         results['sg_multirc_time'] = (time() - time_start) / total
         results['sg_multirc_samples'] = total
 
-        return results
+        return accuracy
 
     def evaluate_record(self, model, tokenizer):
         # Load the dataset
@@ -377,9 +375,12 @@ class EvaluatorSuperGlue():
         # Evaluate
         for example in tqdm(dataset, desc='Evaluating wic', total=len(dataset)):
             # Combine 'sentence1', 'sentence2' and 'word' into a single string
-            input_data = "ALWAYS respond with one and only one symbol 0=no, 1=yes, nothing else, no punctuation! The task is to determine whether the target word has the same sense in both sentences: " + \
-                         example['sentence1'] + ' ' + example['sentence2'] + ' ' + example[
-                             'word'] + "\nDoes the word have the same sense in both sentences? "
+            input_data = ("ALWAYS respond with one and only one symbol 0=no, 1=yes, nothing else, no punctuation! "
+                          "The task is to determine whether the target word has the same meaning in both sentences: "
+                          f"\nSentence 1: {example['sentence1']}"
+                          f"\nSentence 2: {example['sentence2']}"
+                          f"\nWord: {example['word']}"
+                          "\nAnswer: ")
             prediction = nlp(
                 input_data,
             )
@@ -390,10 +391,8 @@ class EvaluatorSuperGlue():
 
         # Calculate accuracy
         accuracy = correct / total
-        results['sg_wic_accuracy'] = accuracy
-        results['sg_wic_time'] = (time() - time_start) / total
 
-        return results
+        return accuracy
 
     def evaluate_wsc(self, model, tokenizer):
         # Load the dataset
@@ -432,20 +431,5 @@ class EvaluatorSuperGlue():
         results['sg_wsc_accuracy'] = accuracy
         results['sg_wsc_time'] = (time() - time_start) / total
         results['sg_wsc_samples'] = total
-
-        return results
-
-    def evaluate(self, model, tokenizer):
-        results = {}
-        results.update(self.evaluate_axb(model, tokenizer))
-        results.update(self.evaluate_axg(model, tokenizer))
-        results.update(self.evaluate_boolq(model, tokenizer))
-        results.update(self.evaluate_cb(model, tokenizer))
-        results.update(self.evaluate_copa(model, tokenizer))
-        results.update(self.evaluate_multirc(model, tokenizer))
-        results.update(self.evaluate_record(model, tokenizer))
-        results.update(self.evaluate_rte(model, tokenizer))
-        results.update(self.evaluate_wic(model, tokenizer))
-        results.update(self.evaluate_wsc(model, tokenizer))
 
         return results

@@ -8,6 +8,7 @@ import torch
 from accelerate import cpu_offload
 from awq import AutoAWQForCausalLM
 from optimum.gptq import GPTQQuantizer
+from tensorboardX import SummaryWriter
 from transformers import BitsAndBytesConfig, AutoModelForCausalLM, \
     AutoTokenizer
 import pandas as pd
@@ -19,17 +20,24 @@ from transformers import logging as hf_logging
 
 hf_logging.set_verbosity_error()
 
-CUR_VERSION = 2
+CUR_VERSION = 4
 
 
 def evaluate_model(model, tokenizer, past_result) -> dict[str, dict[str, float]]:
     results = {}
 
-    if past_result['proc_version'] < 1:
-        results.update(EvaluatorGeneric().evaluate(model, tokenizer))
-        results.update(EvaluatorSuperGlue().evaluate(model, tokenizer))
-    elif past_result['proc_version'] < 2:
-        results.update(EvaluatorGeneric().evaluate_perplexity(model, tokenizer))
+    for i in range(5):
+        if past_result['proc_version'] < 3:
+            results[f"speed_{i}"] = EvaluatorGeneric().evaluate_speed(model, tokenizer)
+            results[f"similarities_{i}"] = EvaluatorGeneric().evaluate_similarity(model, tokenizer)
+            results[f"perplexity_{i}"] = EvaluatorGeneric().evaluate_perplexity(model, tokenizer)
+            results[f'loss_{i}'] = EvaluatorGeneric().calculate_loss(model, tokenizer)
+            results[f'copa_{i}'] = EvaluatorSuperGlue().evaluate_copa(model, tokenizer)
+            results[f'boolq_{i}'] = EvaluatorSuperGlue().evaluate_boolq(model, tokenizer)
+            results[f'multirc_{i}'] = EvaluatorSuperGlue().evaluate_multirc(model, tokenizer)
+        if past_result['proc_version'] < 4:
+            results[f'wic_{i}'] = EvaluatorSuperGlue().evaluate_wic(model, tokenizer)
+            results[f'axg_{i}'] = EvaluatorSuperGlue().evaluate_axg(model, tokenizer)
 
     return results
 
@@ -43,7 +51,6 @@ def run_quantization(quantization_method: str, params: dict[str, any], past_resu
     if quantization_method == 'gptq':
         tokenizer = AutoTokenizer.from_pretrained(params['model_name'])
         model = AutoModelForCausalLM.from_pretrained(params['model_name'], torch_dtype=torch.float16, device_map="auto")
-        model = cpu_offload(model, offload_buffers=True)
         time_start = time()
         params = {k: v for k, v in params.items() if k not in ['model_name']}
         quantizer = GPTQQuantizer(
@@ -51,15 +58,22 @@ def run_quantization(quantization_method: str, params: dict[str, any], past_resu
             pad_token_id=tokenizer.eos_token_id,
         )
         model = quantizer.quantize_model(model, tokenizer)
+        model = cpu_offload(model, offload_buffers=True)
         metrics["quantization_time"] = time() - time_start
         metrics["gpu_utilization"] = get_gpu_utilization()
 
     elif quantization_method == 'bitsandbytes':
         config = BitsAndBytesConfig(
-            **params
+            **params,
+            load_in_4bit=params['bits'] == 4,
+            load_in_8bit=params['bits'] == 8,
         )
         time_start = time()
-        model = AutoModelForCausalLM.from_pretrained(params['model_name'], device_map="auto", quantization_config=config)
+        model = AutoModelForCausalLM.from_pretrained(
+            params['model_name'],
+            device_map="auto",
+            quantization_config=config
+        )
         model = cpu_offload(model, offload_buffers=True)
         metrics["quantization_time"] = time() - time_start
         metrics["gpu_utilization"] = get_gpu_utilization()
@@ -88,16 +102,20 @@ def run_quantization(quantization_method: str, params: dict[str, any], past_resu
         metrics["gpu_utilization"] = get_gpu_utilization()
         tokenizer = AutoTokenizer.from_pretrained(params['model_name'], trust_remote_code=True)
 
+    tokenizer.pad_token = tokenizer.eos_token
     results = evaluate_model(model, tokenizer, past_results)
     results.update(metrics)
     return results
 
 
-def main():
+def main(args=None):
+    if args is None:
+        args = sys.argv
     # Parse the command-line arguments.
-    quantization_method = sys.argv[1]
-    run_name = sys.argv[2]
-    params = json.loads(sys.argv[3])
+    quantization_method = args[1]
+    run_name = args[2]
+    print(args)
+    params = json.loads(' '.join(args[3:]))
 
     results_csv = f"results/{run_name}.csv"
     # read existing csv
@@ -107,11 +125,13 @@ def main():
         df = pd.DataFrame()
 
     # Check if results already computed
-    filtered_df = df[(df['model_name'] == params['model_name']) & (df['method'] == quantization_method)]
-    if not filtered_df.empty:
-        for key, value in params.items():
-            if key in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df[key] == value]
+    filtered_df = pd.DataFrame()
+    if not df.empty:
+        filtered_df = df[(df['model_name'] == params['model_name']) & (df['method'] == quantization_method)]
+        if not filtered_df.empty:
+            for key, value in params.items():
+                if key in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df[key] == value]
 
     prev_result = {
         'proc_version': 0
@@ -130,15 +150,17 @@ def main():
 
     if prev_result['proc_version'] == CUR_VERSION:
         print(f"Already processed {params['model_name']} with {quantization_method} quantization. Version {prev_result['proc_version']}.")
-        return
+        json.dump(prev_result, sys.stderr)
+        return prev_result
 
     # Run the quantization.
+    res = run_quantization(quantization_method, params, prev_result)
     result = {
         **params,
         'method': quantization_method,
         **prev_result,
-        **run_quantization(quantization_method, params, prev_result),
-        'proc_version': '2'
+        **res,
+        'proc_version': CUR_VERSION,
     }
 
     # Save the results to a CSV file.
@@ -149,6 +171,9 @@ def main():
         df = pd.concat([df, pd.DataFrame([result])], ignore_index=True)
     os.makedirs('results', exist_ok=True)
     df.to_csv(results_csv, index=False)
+
+    json.dump(result, sys.stderr)
+    return result
 
 
 if __name__ == '__main__':

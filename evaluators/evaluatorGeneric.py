@@ -1,93 +1,115 @@
 from time import time
 
+import numpy as np
 import torch
 from datasets import load_dataset
 from nltk.translate.bleu_score import sentence_bleu
+from sentence_transformers import SentenceTransformer
 from torch.utils._contextlib import F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import TextGenerationPipeline
+from transformers import TextGenerationPipeline, AutoTokenizer
 
 
 class EvaluatorGeneric:
     def evaluate_speed(self, model, tokenizer):
-        results = {}
+        result = 0
+        try:
+            nlp = TextGenerationPipeline(
+                model=model,
+                tokenizer=tokenizer,
+                max_new_tokens=50,
+                temperature=0.8,
+            )
+            print("Evaluating speed...")
+            prompt = 'The great roman empire was '
+            tokens_generated = 0
+            start = time()
 
-        nlp = TextGenerationPipeline(model=model, tokenizer=tokenizer, max_new_tokens=20)
-        prompt = 'Hello! '
-        tokens_generated = 0
-        start = time()
-        for i in range(5):
-            response = nlp(prompt)
+            response = nlp(
+                prompt,
+            )
             new_text = response[0]['generated_text'].replace(prompt, "")
             tokens_generated += len(tokenizer(new_text)['input_ids'])
-        end = time()
-        results["speed_s_tokens"] = tokens_generated
-        results["speed_s_speed"] = tokens_generated / (end - start)
-        print(f"Short test took {end - start} seconds at {results['speed_s_speed']} tokens per second")
+            print(f"Generated {prompt} => {new_text}")
 
-        prompt = 'Write 3000 word essay on the topic of ancient Rome: '
-        nlp = TextGenerationPipeline(model=model, tokenizer=tokenizer, max_new_tokens=500)
-        tokens_generated = 0
-        start = time()
-        for i in range(5):
-            response = nlp(prompt)
-            new_text = response[0]['generated_text'].replace(prompt, "")
-            tokens_generated += len(tokenizer(new_text)['input_ids'])
-        end = time()
-        results["speed_l_tokens"] = tokens_generated
-        results["speed_l_speed"] = tokens_generated / (end - start)
-        print(f"Long test took {end - start} seconds at {results['speed_l_speed']} tokens per second")
+            end = time()
+            result = tokens_generated / (end - start)
+        except Exception as e:
+            print(f"Failed to evaluate speed: {e}")
+        return result
 
-        return results
+    def evaluate_similarity(self, model, tokenizer: AutoTokenizer):
+        tokenizer.pad_token = tokenizer.eos_token
 
+        models = [
+            SentenceTransformer('sentence-transformers/all-mpnet-base-v2'),
+            SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'),
+            SentenceTransformer('headlesstech/semantic_xlmr'),
+        ]
 
-    def evaluate_bleu(self, model, tokenizer):
-        results = {}
+        ds = load_dataset('tatsu-lab/alpaca')['train']
+        ds = [item for item in ds if len(item['output']) > 0]
+        ds = ds[:100]
+        similarities = []
 
-        dataset = load_dataset('wikitext', 'wikitext-2-raw-v1')['validation']
-        dataset = [item['text'] for item in dataset]
-        prompts_and_references = []
-        for line in dataset:
-            # Use the first sentence as the prompt and the rest as the reference text
-            sentences = line.split('. ')
-            if len(sentences) > 1:
-                prompt = sentences[0]
-                reference_text = ' '.join(sentences[1:])
-                prompts_and_references.append((prompt, reference_text))
-            if len(prompts_and_references) >= 1000:
-                break
+        data_loader = DataLoader(ds, batch_size=10, shuffle=False)
 
-        nlp = TextGenerationPipeline(model=model, tokenizer=tokenizer, max_new_tokens=250)
-        scores = []
-        start = time()
-        batches = [prompts_and_references[i:i + 25] for i in range(0, len(prompts_and_references), 25)]
+        for batch in tqdm(data_loader, desc='Evaluate Similarity'):
+            X_templated = []
+            Y_encoded = []
+            for ins, inp, outp, in zip(batch['instruction'], batch['input'], batch['output']):
+                templated = f'Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.'
+                if ins:
+                    templated += f'\n###Instruction {ins}'
+                if inp:
+                    templated += f'\n###Input: {inp}'
+                templated += f'\n###Response: '
+                X_templated.append(templated)
+                Y_encoded.append(outp[:100])
 
-        for batch in tqdm(batches, desc="BLEU score"):
-            batch_prompts, batch_references = zip(*batch)
-            batch_responses = nlp(list(batch_prompts))
+            X_encoded = tokenizer(X_templated, return_tensors='pt', padding=True, truncation=True).input_ids.to('cuda')
+            Y_emb = torch.cat([m.encode(Y_encoded, convert_to_tensor=True) for m in models], dim=1).to('cuda')
 
-            for response, reference_text in zip(batch_responses, batch_references):
-                generated_text = response['generated_text'].split('.', 1)[-1].strip()  # get generated text
-                candidate_text = generated_text.split()
-                reference_text = reference_text.split()
-                score = sentence_bleu([reference_text], candidate_text)
-                scores.append(score)
+            try:
+                pred_encodings = []
+                Y_pred = model.generate(
+                    X_encoded,
+                    num_beams=1,
+                    max_new_tokens=100,
+                    no_repeat_ngram_size=2,
+                    early_stopping=True,
+                    use_cache=True,
+                    pad_token_id=tokenizer.eos_token_id
+                )
 
-        results["bleu_score"] = sum(scores) / len(scores)
-        results["bleu_time"] = time() - start
-        print(f"Average BLEU score: {results['bleu_score']}")
+                decoded = tokenizer.batch_decode(Y_pred, skip_special_tokens=True)
+                decoded_diff = [d.replace(x, '') for d, x in zip(decoded, X_templated)]
 
-        return results
+                # Get next answer
+                decoded_end = [d.split('###')[1] if '###' in d else d for d in decoded_diff]
+                Y_pred = [d.strip() for d in decoded_end]
+                for m in models:
+                    pred_encodings.append(m.encode(Y_pred, convert_to_tensor=True))
+
+                sims = torch.nn.functional.cosine_similarity(
+                    Y_emb,
+                    torch.cat(pred_encodings, dim=1),
+                    dim=1
+                ).cpu().detach().numpy().tolist()
+
+                similarities.extend(sims)
+            except Exception as e:
+                print(e)
+
+        return np.mean(similarities)
 
     def evaluate_perplexity(self, model, tokenizer):
-        results = {}
 
-        # Load the wikitext dataset
-        dataset = load_dataset('wikitext', 'wikitext-2-raw-v1')['validation']
-        dataset = [item['text'] for item in dataset if len(item['text']) > 0]
-        dataset = dataset[:1000]
-        start = time()
+        # Load the tatsu-lab/alpaca dataset
+        dataset = load_dataset('tatsu-lab/alpaca')['train']
+        dataset = [item['input'] for item in dataset if len(item['input']) > 0]
+        dataset = dataset[:100]
         # Tokenize the dataset and create a DataLoader
         tokenizer.pad_token = tokenizer.eos_token
         encoded_inputs = tokenizer(dataset, return_tensors='pt', truncation=True, padding=True, max_length=1024)
@@ -100,22 +122,44 @@ class EvaluatorGeneric:
         model.eval()
         with torch.no_grad():
             for batch in tqdm(data_loader, desc="Perplexity"):
-                outputs = model(input_ids=batch, labels=batch)
-                total_loss += outputs.loss.item()
-                total_batches += len(batch)
+                try:
+                    outputs = model(input_ids=batch, labels=batch)
+                    total_loss += outputs.loss.item()
+                    total_batches += len(batch)
+                except Exception as e:
+                    print(e)
 
         # Calculate the average loss and convert it to perplexity
-        avg_loss = total_loss / total_batches
+        avg_loss = total_loss / (total_batches if total_batches > 0 else 1)
         perplexity = torch.exp(torch.tensor(avg_loss)).item()
 
-        results["perplexity"] = perplexity
-        results["perplexity_time"] = time() - start
+        return perplexity
 
-        return results
+    def calculate_loss(self, model, tokenizer):
 
+        # Load the tatsu-lab/alpaca dataset
+        dataset = load_dataset('HuggingFaceH4/no_robots')['test']
+        dataset = [item['prompt'] for item in dataset if len(item['prompt']) > 5]
+        # Tokenize the dataset and create a DataLoader
+        tokenizer.pad_token = tokenizer.eos_token
+        encoded_inputs = tokenizer(dataset, return_tensors='pt', truncation=True, padding=True, max_length=1024)
+        data_loader = DataLoader(encoded_inputs['input_ids'], batch_size=10)
 
-    def evaluate(self, model, tokenizer):
-        results = {}
-        results.update(self.evaluate_speed(model, tokenizer))
-        results.update(self.evaluate_perplexity(model, tokenizer))
-        return results
+        total_loss = 0
+        total_batches = 0
+
+        # Feed the tokenized dataset into the model
+        model.eval()
+        with torch.no_grad():
+            for batch in tqdm(data_loader, desc="Loss"):
+                try:
+                    outputs = model(input_ids=batch, labels=batch)
+                    total_loss += outputs.loss.item()
+                    total_batches += len(batch)
+                except Exception as e:
+                    print(e)
+
+        # Calculate the average loss and convert it to perplexity
+        avg_loss = total_loss / (total_batches if total_batches > 0 else 1)
+
+        return avg_loss if avg_loss else 1e9

@@ -13,8 +13,7 @@ numpy
 nltk
 ctransformers
 evaluate
-rouge_score
-lm-eval
 pandas
-autoawq-kernels
 ray[tune]
+tensorboardX
+HEBO
