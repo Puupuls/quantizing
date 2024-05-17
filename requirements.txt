@@ -17,3 +17,4 @@ pandas
 ray[tune]
 tensorboardX
 HEBO
+exllamav2

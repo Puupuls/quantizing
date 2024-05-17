@@ -133,7 +133,7 @@ class EvaluatorSuperGlue():
         results = {}
 
         # Evaluate
-        for example in tqdm(dataset, desc='Evaluating boolq B1', total=len(dataset)):
+        for example in tqdm(dataset, desc='Evaluating boolq', total=len(dataset)):
             # Combine 'passage' and 'question' into a single string and add a prompt for a boolean answer
             input_data = example['passage'] + ' ' + example['question'] + "\nAnswer: 1 for True, 0 for False.\nAnswer: "
             prediction = nlp(

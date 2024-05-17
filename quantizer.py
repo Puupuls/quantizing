@@ -7,12 +7,13 @@ from time import time
 import torch
 from accelerate import cpu_offload
 from awq import AutoAWQForCausalLM
+from exllamav2 import ExLlamaV2, ExLlamaV2Config
 from optimum.gptq import GPTQQuantizer
 from tensorboardX import SummaryWriter
 from transformers import BitsAndBytesConfig, AutoModelForCausalLM, \
-    AutoTokenizer
+    AutoTokenizer, GPTQConfig
 import pandas as pd
-
+import exllamav2
 from evaluators.evaluatorGeneric import EvaluatorGeneric
 from evaluators.evaluatorSuperGlue import EvaluatorSuperGlue
 from utils import get_gpu_utilization
@@ -21,25 +22,45 @@ from transformers import logging as hf_logging
 hf_logging.set_verbosity_error()
 
 CUR_VERSION = 4
+CUR_ITER = 2
 
 
 def evaluate_model(model, tokenizer, past_result) -> dict[str, dict[str, float]]:
-    results = {}
+    torch.cuda.empty_cache()
+    print("Evaluating model...")
+    for i in range(CUR_ITER):
+        print("Iteration", i)
+        if past_result['proc_version'] < 3 or f'loss_{i}' not in past_result or past_result[f'loss_{i}'] is None:
+            print(f"Running iteration {i}...")
+            past_result[f"speed_{i}"] = EvaluatorGeneric().evaluate_speed(model, tokenizer)
+            torch.cuda.empty_cache()
+            print(f"Running iteration {i}...")
+            past_result[f"similarities_{i}"] = EvaluatorGeneric().evaluate_similarity(model, tokenizer)
+            torch.cuda.empty_cache()
+            print(f"Running iteration {i}...")
+            past_result[f"perplexity_{i}"] = EvaluatorGeneric().evaluate_perplexity(model, tokenizer)
+            torch.cuda.empty_cache()
+            print(f"Running iteration {i}...")
+            past_result[f'loss_{i}'] = EvaluatorGeneric().calculate_loss(model, tokenizer)
+            torch.cuda.empty_cache()
+            print(f"Running iteration {i}...")
+            past_result[f'copa_{i}'] = EvaluatorSuperGlue().evaluate_copa(model, tokenizer)
+            torch.cuda.empty_cache()
+            print(f"Running iteration {i}...")
+            past_result[f'boolq_{i}'] = EvaluatorSuperGlue().evaluate_boolq(model, tokenizer)
+            torch.cuda.empty_cache()
+            print(f"Running iteration {i}...")
+            past_result[f'multirc_{i}'] = EvaluatorSuperGlue().evaluate_multirc(model, tokenizer)
+            torch.cuda.empty_cache()
+        if past_result['proc_version'] < 4 or f'wic_{i}' not in past_result or past_result[f'wic_{i}'] is None:
+            print(f"Running iteration {i}...")
+            past_result[f'wic_{i}'] = EvaluatorSuperGlue().evaluate_wic(model, tokenizer)
+            torch.cuda.empty_cache()
+            print(f"Running iteration {i}...")
+            past_result[f'axg_{i}'] = EvaluatorSuperGlue().evaluate_axg(model, tokenizer)
+            torch.cuda.empty_cache()
 
-    for i in range(5):
-        if past_result['proc_version'] < 3:
-            results[f"speed_{i}"] = EvaluatorGeneric().evaluate_speed(model, tokenizer)
-            results[f"similarities_{i}"] = EvaluatorGeneric().evaluate_similarity(model, tokenizer)
-            results[f"perplexity_{i}"] = EvaluatorGeneric().evaluate_perplexity(model, tokenizer)
-            results[f'loss_{i}'] = EvaluatorGeneric().calculate_loss(model, tokenizer)
-            results[f'copa_{i}'] = EvaluatorSuperGlue().evaluate_copa(model, tokenizer)
-            results[f'boolq_{i}'] = EvaluatorSuperGlue().evaluate_boolq(model, tokenizer)
-            results[f'multirc_{i}'] = EvaluatorSuperGlue().evaluate_multirc(model, tokenizer)
-        if past_result['proc_version'] < 4:
-            results[f'wic_{i}'] = EvaluatorSuperGlue().evaluate_wic(model, tokenizer)
-            results[f'axg_{i}'] = EvaluatorSuperGlue().evaluate_axg(model, tokenizer)
-
-    return results
+    return past_result
 
 
 def run_quantization(quantization_method: str, params: dict[str, any], past_results) -> dict:
@@ -48,17 +69,21 @@ def run_quantization(quantization_method: str, params: dict[str, any], past_resu
         "gpu_utilization": 0,
         "quantization_time": 0,
     }
+    torch.cuda.empty_cache()
     if quantization_method == 'gptq':
         tokenizer = AutoTokenizer.from_pretrained(params['model_name'])
         model = AutoModelForCausalLM.from_pretrained(params['model_name'], torch_dtype=torch.float16, device_map="auto")
         time_start = time()
+
         params = {k: v for k, v in params.items() if k not in ['model_name']}
-        quantizer = GPTQQuantizer(
+
+        gptq_config = GPTQConfig(
             **params,
-            pad_token_id=tokenizer.eos_token_id,
+            bits=4,
+            exllama_config={"version": params['exllama_version']}
         )
-        model = quantizer.quantize_model(model, tokenizer)
-        model = cpu_offload(model, offload_buffers=True)
+        model = model.quantize(quantization_config=gptq_config)
+
         metrics["quantization_time"] = time() - time_start
         metrics["gpu_utilization"] = get_gpu_utilization()
 
@@ -105,6 +130,11 @@ def run_quantization(quantization_method: str, params: dict[str, any], past_resu
     tokenizer.pad_token = tokenizer.eos_token
     results = evaluate_model(model, tokenizer, past_results)
     results.update(metrics)
+
+    del model
+    del tokenizer
+    torch.cuda.empty_cache()
+
     return results
 
 
@@ -148,12 +178,14 @@ def main(args=None):
             prev_result['proc_version'] = 1
         print(f"Found previous results for {params['model_name']} with {quantization_method} quantization. Version {prev_result['proc_version']}.")
 
-    if prev_result['proc_version'] == CUR_VERSION:
-        print(f"Already processed {params['model_name']} with {quantization_method} quantization. Version {prev_result['proc_version']}.")
-        json.dump(prev_result, sys.stderr)
-        return prev_result
+    # if prev_result['proc_version'] == CUR_VERSION:
+    #     print(f"Already processed {params['model_name']} with {quantization_method} quantization. Version {prev_result['proc_version']}.")
+    #     json.dump(prev_result, sys.stderr)
+    #     return prev_result
 
     # Run the quantization.
+    available_devices = torch.cuda.device_count()
+    print(f"Available GPU devices: {available_devices}")
     res = run_quantization(quantization_method, params, prev_result)
     result = {
         **params,
@@ -170,7 +202,15 @@ def main(args=None):
         df = df.drop(filtered_df.index)
         df = pd.concat([df, pd.DataFrame([result])], ignore_index=True)
     os.makedirs('results', exist_ok=True)
+
     df.to_csv(results_csv, index=False)
+
+    # fd = os.open(results_csv, os.O_CREAT | os.O_WRONLY)
+    #
+    # os.lockf(fd, os.F_LOCK, 0)
+    # csv = df.to_csv(index=False)
+    # os.write(fd, csv.encode())
+    # os.lockf(fd, os.F_ULOCK, 0)
 
     json.dump(result, sys.stderr)
     return result
