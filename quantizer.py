@@ -22,7 +22,7 @@ from transformers import logging as hf_logging
 hf_logging.set_verbosity_error()
 
 CUR_VERSION = 4
-CUR_ITER = 2
+CUR_ITER = 5
 
 
 def evaluate_model(model, tokenizer, past_result) -> dict[str, dict[str, float]]:
@@ -79,7 +79,6 @@ def run_quantization(quantization_method: str, params: dict[str, any], past_resu
 
         gptq_config = GPTQConfig(
             **params,
-            bits=4,
             exllama_config={"version": params['exllama_version']}
         )
         model = model.quantize(quantization_config=gptq_config)

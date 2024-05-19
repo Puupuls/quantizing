@@ -18,3 +18,4 @@ ray[tune]
 tensorboardX
 HEBO
 exllamav2
+matplotlib

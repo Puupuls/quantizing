@@ -104,7 +104,7 @@ for space in param_spaces:
                 'gpu': 1,
             },
             name=f'{space["method"][0]}_quantization',
-            num_samples=30 if space_size > 30 else space_size,
+            num_samples=20 if space_size > 20 else space_size,
             verbose=0,
         )
     except Exception as e:
